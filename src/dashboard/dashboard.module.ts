@@ -1,0 +1,12 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config'; // เพิ่มบรรทัดนี้
+import { DashboardController } from './dashboard.controller';
+import { DashboardService } from './dashboard.service';
+
+@Module({
+  imports: [ConfigModule], // เพิ่มบรรทัดนี้
+  controllers: [DashboardController],
+  providers: [DashboardService],
+  exports: [DashboardService],
+})
+export class DashboardModule {}
