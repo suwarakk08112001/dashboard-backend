@@ -101,21 +101,25 @@ export class DashboardService implements OnModuleInit {
   }
 
   private async discoverSheetNames(): Promise<void> {
-    const spreadsheet = await this.sheets.spreadsheets.get({
-      spreadsheetId: this.spreadsheetId,
-    });
-
-    const allSheets =
-      spreadsheet.data.sheets?.map((s) => s.properties?.title ?? '') ?? [];
-
-    this.sheetName = allSheets[1] ?? 'Sheet1';
-    this.sheetName1 = allSheets[2] ?? 'Sheet2';
-    this.sheetName2 = allSheets[3] ?? 'Sheet3';
-
-    this.logger.log(`Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
-    this.logger.log(
-      `Sheet หลัก: "${this.sheetName}" | รับเข้า: "${this.sheetName1}" | จ่ายออก: "${this.sheetName2}"`,
-    );
+    try {
+      const spreadsheet = await this.sheets.spreadsheets.get({
+        spreadsheetId: this.spreadsheetId,
+      });
+  
+      const allSheets =
+        spreadsheet.data.sheets?.map((s) => s.properties?.title ?? '') ?? [];
+  
+      this.sheetName = allSheets[1] ?? 'Sheet1';
+      this.sheetName1 = allSheets[2] ?? 'Sheet2';
+      this.sheetName2 = allSheets[3] ?? 'Sheet3';
+  
+      this.logger.log(`Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
+    } catch (error) {
+      this.logger.warn('ไม่สามารถ discover sheets ได้ ใช้ค่าจาก env แทน');
+      this.sheetName = this.configService.get<string>('GOOGLE_SHEET_NAME') ?? 'Sheet1';
+      this.sheetName1 = this.configService.get<string>('GOOGLE_SHEET_NAME_1') ?? 'Sheet2';
+      this.sheetName2 = this.configService.get<string>('GOOGLE_SHEET_NAME_2') ?? 'Sheet3';
+    }
   }
 
   /* ──────────────────────────────────────────────
