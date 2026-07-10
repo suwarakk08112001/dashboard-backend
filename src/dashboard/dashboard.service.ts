@@ -19,14 +19,57 @@ export class DashboardService implements OnModuleInit {
 
   constructor(private configService: ConfigService) {}
 
+  // async onModuleInit() {
+  //   const auth = new google.auth.GoogleAuth({
+  //     keyFile: this.configService.get<string>(
+  //       'GOOGLE_SERVICE_ACCOUNT_KEY_PATH',
+  //     ),
+  //     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  //   });
+
+  //   const authClient = await auth.getClient();
+  //   this.sheets = google.sheets({
+  //     version: 'v4',
+  //     auth: authClient as InstanceType<typeof google.auth.JWT>,
+  //   });
+  //   this.spreadsheetId = this.configService.get<string>(
+  //     'GOOGLE_SPREADSHEET_ID',
+  //   )!;
+
+  //   // ดึงชื่อ Sheet จริงจาก Google Sheet
+  //   const spreadsheet = await this.sheets.spreadsheets.get({
+  //     spreadsheetId: this.spreadsheetId,
+  //   });
+  //   const allSheets =
+  //     spreadsheet.data.sheets?.map((s) => s.properties?.title || '') || [];
+  //   this.logger.log(`📋 Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
+
+  //   this.sheetName = allSheets[1] || 'Sheet1';
+  //   this.sheetName1 = allSheets[2] || 'Sheet2';
+  //   this.sheetName2 = allSheets[3] || 'Sheet3';
+
+  //   this.logger.log(`✅ เชื่อมต่อสำเร็จ`);
+  //   this.logger.log(`📌 Sheet หลัก: "${this.sheetName}"`);
+  //   this.logger.log(`📌 Sheet รับเข้า: "${this.sheetName1}"`);
+  //   this.logger.log(`📌 Sheet จ่ายออก: "${this.sheetName2}"`);
+  // }
   async onModuleInit() {
+    const privateKey = this.configService
+      .get<string>('PRIVATE_KEY')
+      ?.replace(/\\n/g, '\n');
+  
     const auth = new google.auth.GoogleAuth({
-      keyFile: this.configService.get<string>(
-        'GOOGLE_SERVICE_ACCOUNT_KEY_PATH',
-      ),
+      credentials: {
+        type: this.configService.get<string>('TYPE'),
+        project_id: this.configService.get<string>('PROJECT_ID'),
+        private_key_id: this.configService.get<string>('PRIVATE_KEY_ID'),
+        private_key: privateKey,
+        client_email: this.configService.get<string>('CLIENT_EMAIL'),
+        client_id: this.configService.get<string>('CLIENT_ID'),
+      },
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
-
+  
     const authClient = await auth.getClient();
     this.sheets = google.sheets({
       version: 'v4',
@@ -35,7 +78,7 @@ export class DashboardService implements OnModuleInit {
     this.spreadsheetId = this.configService.get<string>(
       'GOOGLE_SPREADSHEET_ID',
     )!;
-
+  
     // ดึงชื่อ Sheet จริงจาก Google Sheet
     const spreadsheet = await this.sheets.spreadsheets.get({
       spreadsheetId: this.spreadsheetId,
@@ -43,17 +86,16 @@ export class DashboardService implements OnModuleInit {
     const allSheets =
       spreadsheet.data.sheets?.map((s) => s.properties?.title || '') || [];
     this.logger.log(`📋 Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
-
+  
     this.sheetName = allSheets[1] || 'Sheet1';
     this.sheetName1 = allSheets[2] || 'Sheet2';
     this.sheetName2 = allSheets[3] || 'Sheet3';
-
+  
     this.logger.log(`✅ เชื่อมต่อสำเร็จ`);
     this.logger.log(`📌 Sheet หลัก: "${this.sheetName}"`);
     this.logger.log(`📌 Sheet รับเข้า: "${this.sheetName1}"`);
     this.logger.log(`📌 Sheet จ่ายออก: "${this.sheetName2}"`);
   }
-
   // ─────────────────────────────────────────────
   //  Cache Layer — ลด API call ไม่ให้ชน quota
   // ─────────────────────────────────────────────
