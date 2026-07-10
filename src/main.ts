@@ -1,23 +1,29 @@
 import * as dotenv from 'dotenv';
-dotenv.config(); // <--- บรรทัดนี้ต้องอยู่บนสุด ห้ามย้าย!
+dotenv.config();
 
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { ExpressAdapter } from '@nestjs/platform-express';
+import express from 'express';
+
+const server = express();
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(server));
 
   app.setGlobalPrefix('dashboard-google-sheets/api/v1');
 
   app.enableCors({
-    origin: process.env.frontend, // ← เปลี่ยนเป็น port ของ Quasar dev server
+    origin: process.env.frontend,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
 
-  await app.listen(Number(process.env.PORT));
+  await app.init(); // ← ใช้ init() แทน listen()
 }
 
 bootstrap().catch((err) => {
   console.error(err);
 });
+
+export default server; // ← Vercel จะเรียก server ตัวนี้
