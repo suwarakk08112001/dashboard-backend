@@ -57,7 +57,7 @@ export class DashboardService implements OnModuleInit {
     const privateKey = this.configService
       .get<string>('PRIVATE_KEY')
       ?.replace(/\\n/g, '\n');
-  
+
     const auth = new google.auth.GoogleAuth({
       credentials: {
         type: this.configService.get<string>('TYPE'),
@@ -69,7 +69,7 @@ export class DashboardService implements OnModuleInit {
       },
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
-  
+
     const authClient = await auth.getClient();
     this.sheets = google.sheets({
       version: 'v4',
@@ -78,7 +78,7 @@ export class DashboardService implements OnModuleInit {
     this.spreadsheetId = this.configService.get<string>(
       'GOOGLE_SPREADSHEET_ID',
     )!;
-  
+
     // ดึงชื่อ Sheet จริงจาก Google Sheet
     const spreadsheet = await this.sheets.spreadsheets.get({
       spreadsheetId: this.spreadsheetId,
@@ -86,11 +86,11 @@ export class DashboardService implements OnModuleInit {
     const allSheets =
       spreadsheet.data.sheets?.map((s) => s.properties?.title || '') || [];
     this.logger.log(`📋 Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
-  
+
     this.sheetName = allSheets[1] || 'Sheet1';
     this.sheetName1 = allSheets[2] || 'Sheet2';
     this.sheetName2 = allSheets[3] || 'Sheet3';
-  
+
     this.logger.log(`✅ เชื่อมต่อสำเร็จ`);
     this.logger.log(`📌 Sheet หลัก: "${this.sheetName}"`);
     this.logger.log(`📌 Sheet รับเข้า: "${this.sheetName1}"`);
@@ -200,9 +200,7 @@ export class DashboardService implements OnModuleInit {
       return false;
     };
 
-    const aggregateByMonth = (
-      rows: any[][],
-    ): Map<number, number> => {
+    const aggregateByMonth = (rows: any[][]): Map<number, number> => {
       const map = new Map<number, number>();
       if (rows.length <= 1) return map;
 
@@ -278,9 +276,7 @@ export class DashboardService implements OnModuleInit {
       return false;
     };
 
-    const aggregate = (
-      rows: any[][],
-    ): Map<string, number> => {
+    const aggregate = (rows: any[][]): Map<string, number> => {
       const map = new Map<string, number>();
       if (rows.length <= 1) return map;
 
