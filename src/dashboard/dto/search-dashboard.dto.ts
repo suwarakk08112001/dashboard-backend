@@ -1,10 +1,14 @@
 import { IsOptional, IsNumber } from 'class-validator';
-export class SearchDto{
-    @IsOptional()
-    @IsNumber()
-    year?:number;
+import { Type } from 'class-transformer';
 
-    @IsOptional()
-    @IsNumber()
-    month?:number;
+export class SearchDto {
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  financialYear?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  month?: number;
 }
