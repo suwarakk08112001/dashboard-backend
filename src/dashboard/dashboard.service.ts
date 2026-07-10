@@ -1,7 +1,58 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
-import { SearchDto } from './dto/search-dashboard.dto';
 import { ConfigService } from '@nestjs/config';
 import { google, sheets_v4 } from 'googleapis';
+import { SearchDto } from './dto/search-dashboard.dto';
+
+/* ════════════════════════════════════════════════
+   Types
+   ════════════════════════════════════════════════ */
+
+interface CacheEntry {
+  data: string[][];
+  fetchedAt: number;
+}
+
+export interface MonthlyTotal {
+  month: number;
+  totalIn: number;
+  totalOut: number;
+  medSupply: number;
+}
+
+export interface NamedTotal {
+  name: string;
+  total: number;
+}
+
+interface ColumnIndices {
+  name: number;
+  value: number;
+  yearMonth: number;
+}
+
+interface FiscalContext {
+  fiscalYear: number;
+  targetMonth: number | null;
+  startYear: number;
+}
+
+/* ════════════════════════════════════════════════
+   Constants
+   ════════════════════════════════════════════════ */
+
+const COLUMN_HEADERS = {
+  PRODUCT_NAME: 'ชื่อสินค้า',
+  TOTAL_VALUE: 'มูลค่ารวม',
+  YEAR_MONTH: 'ปีเดือน',
+} as const;
+
+const FISCAL_MONTH_ORDER = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
+const TOP_N = 10;
+const CACHE_TTL_MS = 2 * 60 * 1000;
+
+/* ════════════════════════════════════════════════
+   Service
+   ════════════════════════════════════════════════ */
 
 @Injectable()
 export class DashboardService implements OnModuleInit {
@@ -11,49 +62,16 @@ export class DashboardService implements OnModuleInit {
   private sheetName1: string;
   private sheetName2: string;
 
-  // ── Cache เก็บข้อมูล sheet ในหน่วยความจำ ──
-  private cache = new Map<string, { data: any[][]; fetchedAt: number }>();
-  private readonly CACHE_TTL_MS = 2 * 60 * 1000; // 2 นาที (ปรับได้ตามความถี่ที่ข้อมูลเปลี่ยน)
-
+  private readonly cache = new Map<string, CacheEntry>();
   private readonly logger = new Logger(DashboardService.name);
 
-  constructor(private configService: ConfigService) {}
+  constructor(private readonly configService: ConfigService) {}
 
-  // async onModuleInit() {
-  //   const auth = new google.auth.GoogleAuth({
-  //     keyFile: this.configService.get<string>(
-  //       'GOOGLE_SERVICE_ACCOUNT_KEY_PATH',
-  //     ),
-  //     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  //   });
+  /* ──────────────────────────────────────────────
+     Initialization
+     ────────────────────────────────────────────── */
 
-  //   const authClient = await auth.getClient();
-  //   this.sheets = google.sheets({
-  //     version: 'v4',
-  //     auth: authClient as InstanceType<typeof google.auth.JWT>,
-  //   });
-  //   this.spreadsheetId = this.configService.get<string>(
-  //     'GOOGLE_SPREADSHEET_ID',
-  //   )!;
-
-  //   // ดึงชื่อ Sheet จริงจาก Google Sheet
-  //   const spreadsheet = await this.sheets.spreadsheets.get({
-  //     spreadsheetId: this.spreadsheetId,
-  //   });
-  //   const allSheets =
-  //     spreadsheet.data.sheets?.map((s) => s.properties?.title || '') || [];
-  //   this.logger.log(`📋 Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
-
-  //   this.sheetName = allSheets[1] || 'Sheet1';
-  //   this.sheetName1 = allSheets[2] || 'Sheet2';
-  //   this.sheetName2 = allSheets[3] || 'Sheet3';
-
-  //   this.logger.log(`✅ เชื่อมต่อสำเร็จ`);
-  //   this.logger.log(`📌 Sheet หลัก: "${this.sheetName}"`);
-  //   this.logger.log(`📌 Sheet รับเข้า: "${this.sheetName1}"`);
-  //   this.logger.log(`📌 Sheet จ่ายออก: "${this.sheetName2}"`);
-  // }
-  async onModuleInit() {
+  async onModuleInit(): Promise<void> {
     const privateKey = this.configService
       .get<string>('PRIVATE_KEY')
       ?.replace(/\\n/g, '\n');
@@ -75,61 +93,180 @@ export class DashboardService implements OnModuleInit {
       version: 'v4',
       auth: authClient as InstanceType<typeof google.auth.JWT>,
     });
+
     this.spreadsheetId = this.configService.get<string>(
       'GOOGLE_SPREADSHEET_ID',
     )!;
+    await this.discoverSheetNames();
+  }
 
-    // ดึงชื่อ Sheet จริงจาก Google Sheet
+  private async discoverSheetNames(): Promise<void> {
     const spreadsheet = await this.sheets.spreadsheets.get({
       spreadsheetId: this.spreadsheetId,
     });
+
     const allSheets =
-      spreadsheet.data.sheets?.map((s) => s.properties?.title || '') || [];
-    this.logger.log(`📋 Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
+      spreadsheet.data.sheets?.map((s) => s.properties?.title ?? '') ?? [];
 
-    this.sheetName = allSheets[1] || 'Sheet1';
-    this.sheetName1 = allSheets[2] || 'Sheet2';
-    this.sheetName2 = allSheets[3] || 'Sheet3';
+    this.sheetName = allSheets[1] ?? 'Sheet1';
+    this.sheetName1 = allSheets[2] ?? 'Sheet2';
+    this.sheetName2 = allSheets[3] ?? 'Sheet3';
 
-    this.logger.log(`✅ เชื่อมต่อสำเร็จ`);
-    this.logger.log(`📌 Sheet หลัก: "${this.sheetName}"`);
-    this.logger.log(`📌 Sheet รับเข้า: "${this.sheetName1}"`);
-    this.logger.log(`📌 Sheet จ่ายออก: "${this.sheetName2}"`);
+    this.logger.log(`Sheet ทั้งหมด: ${JSON.stringify(allSheets)}`);
+    this.logger.log(
+      `Sheet หลัก: "${this.sheetName}" | รับเข้า: "${this.sheetName1}" | จ่ายออก: "${this.sheetName2}"`,
+    );
   }
-  // ─────────────────────────────────────────────
-  //  Cache Layer — ลด API call ไม่ให้ชน quota
-  // ─────────────────────────────────────────────
 
-  /**
-   * ดึงข้อมูล sheet โดยใช้ cache
-   * ถ้าข้อมูลยังไม่หมดอายุ (CACHE_TTL_MS) จะคืนจาก memory ทันทีโดยไม่เรียก API
-   */
-  private async getSheetData(sheetName: string): Promise<any[][]> {
+  /* ──────────────────────────────────────────────
+     Cache Layer
+     ────────────────────────────────────────────── */
+
+  private async getSheetData(sheetName: string): Promise<string[][]> {
     const cached = this.cache.get(sheetName);
-    if (cached && Date.now() - cached.fetchedAt < this.CACHE_TTL_MS) {
-      this.logger.debug(`📦 Cache hit: "${sheetName}"`);
+
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+      this.logger.debug(`Cache hit: "${sheetName}"`);
       return cached.data;
     }
 
-    this.logger.log(`🔄 Fetching from API: "${sheetName}"`);
+    this.logger.log(`Fetching from API: "${sheetName}"`);
+
     const res = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
       range: sheetName,
     });
 
-    const data = res.data.values || [];
+    const data = (res.data.values as string[][]) ?? [];
     this.cache.set(sheetName, { data, fetchedAt: Date.now() });
     return data;
   }
 
-  // ─────────────────────────────────────────────
-  //  API Methods
-  // ─────────────────────────────────────────────
+  /* ──────────────────────────────────────────────
+     Shared Helpers
+     ────────────────────────────────────────────── */
+
+  /** สร้าง fiscal context จาก DTO (ใช้ร่วมกันทุก method) */
+  private buildFiscalContext(dto: SearchDto): FiscalContext {
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentFiscalYear =
+      currentMonth >= 10 ? now.getFullYear() + 1 : now.getFullYear();
+
+    const fiscalYear = Number(dto.financialYear) || currentFiscalYear;
+
+    return {
+      fiscalYear,
+      targetMonth: dto.month ? Number(dto.month) : null,
+      startYear: fiscalYear - 1,
+    };
+  }
+
+  /** ตรวจว่า row อยู่ในปีงบประมาณหรือไม่ */
+  private isInFiscalYear(
+    rowYear: number,
+    rowMonth: number,
+    ctx: FiscalContext,
+  ): boolean {
+    return (
+      (rowYear === ctx.startYear && rowMonth >= 10) ||
+      (rowYear === ctx.fiscalYear && rowMonth <= 9)
+    );
+  }
+
+  /** ตรวจว่า row ตรงเดือนที่ต้องการหรือไม่ (null = ทุกเดือน) */
+  private matchesMonth(rowMonth: number, targetMonth: number | null): boolean {
+    return targetMonth === null || rowMonth === targetMonth;
+  }
+
+  /** Parse "YYYY-MM" → [year, month] หรือ null ถ้า format ไม่ถูก */
+  private parseYearMonth(ymStr: string): [number, number] | null {
+    const trimmed = ymStr.trim();
+    if (!trimmed) return null;
+
+    const [yearStr, monthStr] = trimmed.split('-');
+    const year = parseInt(yearStr, 10);
+    const month = parseInt(monthStr, 10);
+
+    return isNaN(year) || isNaN(month) ? null : [year, month];
+  }
+
+  /** Parse ตัวเลขจาก string (รองรับ comma) */
+  // private parseNumber(raw: unknown): number {
+  //   const val = parseFloat(String(raw ?? '0').replace(/,/g, ''));
+  //   return isNaN(val) ? 0 : val;
+  // }
+  private parseNumber(raw: unknown): number {
+    if (raw == null) return 0;
+    const str =
+      typeof raw === 'string'
+        ? raw
+        : typeof raw === 'number'
+          ? String(raw)
+          : '0';
+    const val = parseFloat(str.replace(/,/g, ''));
+    return isNaN(val) ? 0 : val;
+  }
+
+  /** หา column index จาก header */
+  private findColumnIndices(headers: string[]): ColumnIndices | null {
+    const name = headers.findIndex((h) =>
+      h.includes(COLUMN_HEADERS.PRODUCT_NAME),
+    );
+    const value = headers.findIndex((h) =>
+      h.includes(COLUMN_HEADERS.TOTAL_VALUE),
+    );
+    const yearMonth = headers.findIndex((h) =>
+      h.includes(COLUMN_HEADERS.YEAR_MONTH),
+    );
+
+    if (name === -1 || value === -1 || yearMonth === -1) return null;
+    return { name, value, yearMonth };
+  }
+
+  /** Aggregate มูลค่าตามชื่อสินค้า (ใช้ร่วมกัน Top10 Stock & TransOut) */
+  private aggregateByName(
+    rows: string[][],
+    ctx: FiscalContext,
+  ): Map<string, number> {
+    const map = new Map<string, number>();
+    if (rows.length <= 1) return map;
+
+    const cols = this.findColumnIndices(rows[0]);
+    if (!cols) return map;
+
+    for (const row of rows.slice(1)) {
+      const parsed = this.parseYearMonth(String(row[cols.yearMonth] ?? ''));
+      if (!parsed) continue;
+
+      const [rowYear, rowMonth] = parsed;
+      if (!this.isInFiscalYear(rowYear, rowMonth, ctx)) continue;
+      if (!this.matchesMonth(rowMonth, ctx.targetMonth)) continue;
+
+      const name = String(row[cols.name] ?? '').trim();
+      if (!name) continue;
+
+      const val = this.parseNumber(row[cols.value]);
+      if (val === 0) continue;
+
+      map.set(name, (map.get(name) ?? 0) + val);
+    }
+
+    return map;
+  }
+
+  /** เรียงลำดับและตัด Top N */
+  private topN(entries: NamedTotal[], n = TOP_N): NamedTotal[] {
+    return entries.sort((a, b) => b.total - a.total).slice(0, n);
+  }
+
+  /* ──────────────────────────────────────────────
+     API Methods
+     ────────────────────────────────────────────── */
 
   async findTotalSKU(): Promise<{ total_of_SKU: number }> {
     const rows = await this.getSheetData(this.sheetName);
-    if (rows.length <= 1) return { total_of_SKU: 0 };
-    return { total_of_SKU: rows.length - 1 };
+    return { total_of_SKU: Math.max(rows.length - 1, 0) };
   }
 
   async findTotalStockValue(): Promise<{
@@ -137,33 +274,28 @@ export class DashboardService implements OnModuleInit {
     total_stock_out: number;
     total_stock_value: number;
   }> {
-    const rowsIn = await this.getSheetData(this.sheetName1);
-    const rowsOut = await this.getSheetData(this.sheetName2);
+    const [rowsIn, rowsOut] = await Promise.all([
+      this.getSheetData(this.sheetName1),
+      this.getSheetData(this.sheetName2),
+    ]);
 
-    const sumColumn = (rows: any[][]): number => {
+    const sumValueColumn = (rows: string[][]): number => {
       if (rows.length <= 1) return 0;
-      const headers = rows[0];
-      const colIndex = headers.findIndex((h: string) =>
-        h.includes('มูลค่ารวม'),
+
+      const colIndex = rows[0].findIndex((h) =>
+        h.includes(COLUMN_HEADERS.TOTAL_VALUE),
       );
       if (colIndex === -1) return 0;
 
-      return rows
-        .slice(1)
-        .filter((row) => {
-          const firstCell = String(row[0] || '').trim();
-          return firstCell !== '' && !firstCell.includes('รวม');
-        })
-        .reduce((sum, row) => {
-          const val = parseFloat(
-            String(row[colIndex] || '0').replace(/,/g, ''),
-          );
-          return sum + (isNaN(val) ? 0 : val);
-        }, 0);
+      return rows.slice(1).reduce((sum, row) => {
+        const firstCell = String(row[0] ?? '').trim();
+        if (!firstCell || firstCell.includes('รวม')) return sum;
+        return sum + this.parseNumber(row[colIndex]);
+      }, 0);
     };
 
-    const totalIn = sumColumn(rowsIn);
-    const totalOut = sumColumn(rowsOut);
+    const totalIn = sumValueColumn(rowsIn);
+    const totalOut = sumValueColumn(rowsOut);
 
     return {
       total_stock_in: totalIn,
@@ -172,64 +304,40 @@ export class DashboardService implements OnModuleInit {
     };
   }
 
-  async findMonthlyStockValue(dto: SearchDto): Promise<{
-    fiscalYear: number;
-    months: {
-      month: number;
-      totalIn: number;
-      totalOut: number;
-      medSupply: number;
-    }[];
-  }> {
+  async findMonthlyStockValue(
+    dto: SearchDto,
+  ): Promise<{ fiscalYear: number; months: MonthlyTotal[] }> {
     const [rowsIn, rowsOut] = await Promise.all([
       this.getSheetData(this.sheetName1),
       this.getSheetData(this.sheetName2),
     ]);
 
-    const now = new Date();
-    const currentMonth = now.getMonth() + 1;
-    const currentFiscalYear =
-      currentMonth >= 10 ? now.getFullYear() + 1 : now.getFullYear();
+    const ctx = this.buildFiscalContext(dto);
 
-    const fiscalYear = Number(dto.financialYear) || currentFiscalYear;
-
-    const startYear = fiscalYear - 1;
-    const isInFiscalYear = (rowYear: number, rowMonth: number): boolean => {
-      if (rowYear === startYear && rowMonth >= 10) return true;
-      if (rowYear === fiscalYear && rowMonth <= 9) return true;
-      return false;
-    };
-
-    const aggregateByMonth = (rows: any[][]): Map<number, number> => {
+    const aggregateByMonth = (rows: string[][]): Map<number, number> => {
       const map = new Map<number, number>();
       if (rows.length <= 1) return map;
 
       const headers = rows[0];
-      const valueColIndex = headers.findIndex((h: string) =>
-        h.includes('มูลค่ารวม'),
+      const valueIdx = headers.findIndex((h) =>
+        h.includes(COLUMN_HEADERS.TOTAL_VALUE),
       );
-      const ymColIndex = headers.findIndex((h: string) =>
-        h.includes('ปีเดือน'),
+      const ymIdx = headers.findIndex((h) =>
+        h.includes(COLUMN_HEADERS.YEAR_MONTH),
       );
-
-      if (valueColIndex === -1 || ymColIndex === -1) return map;
+      if (valueIdx === -1 || ymIdx === -1) return map;
 
       for (const row of rows.slice(1)) {
-        const ymStr = String(row[ymColIndex] || '').trim();
-        if (!ymStr) continue;
+        const parsed = this.parseYearMonth(String(row[ymIdx] ?? ''));
+        if (!parsed) continue;
 
-        const [yearStr, monthStr] = ymStr.split('-');
-        const rowYear = parseInt(yearStr, 10);
-        const rowMonth = parseInt(monthStr, 10);
+        const [rowYear, rowMonth] = parsed;
+        if (!this.isInFiscalYear(rowYear, rowMonth, ctx)) continue;
 
-        if (!isInFiscalYear(rowYear, rowMonth)) continue;
+        const val = this.parseNumber(row[valueIdx]);
+        if (val === 0) continue;
 
-        const val = parseFloat(
-          String(row[valueColIndex] || '0').replace(/,/g, ''),
-        );
-        if (isNaN(val)) continue;
-
-        map.set(rowMonth, (map.get(rowMonth) || 0) + val);
+        map.set(rowMonth, (map.get(rowMonth) ?? 0) + val);
       }
 
       return map;
@@ -238,10 +346,10 @@ export class DashboardService implements OnModuleInit {
     const stockInByMonth = aggregateByMonth(rowsIn);
     const stockOutByMonth = aggregateByMonth(rowsOut);
 
-    const fiscalMonthOrder = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-    const months = fiscalMonthOrder.map((month) => {
-      const totalIn = stockInByMonth.get(month) || 0;
-      const totalOut = stockOutByMonth.get(month) || 0;
+    const months: MonthlyTotal[] = FISCAL_MONTH_ORDER.map((month) => {
+      const totalIn = stockInByMonth.get(month) ?? 0;
+      const totalOut = stockOutByMonth.get(month) ?? 0;
+
       return {
         month,
         totalIn,
@@ -250,152 +358,40 @@ export class DashboardService implements OnModuleInit {
       };
     });
 
-    return { fiscalYear, months };
+    return { fiscalYear: ctx.fiscalYear, months };
   }
 
-  async findTopTenStock(
-    dto: SearchDto,
-  ): Promise<{ name: string; total: number }[]> {
+  async findTopTenStock(dto: SearchDto): Promise<NamedTotal[]> {
     const [rowsIn, rowsOut] = await Promise.all([
       this.getSheetData(this.sheetName1),
       this.getSheetData(this.sheetName2),
     ]);
 
-    const now = new Date();
-    const currentMonth = now.getMonth() + 1;
-    const currentFiscalYear =
-      currentMonth >= 10 ? now.getFullYear() + 1 : now.getFullYear();
-
-    const fiscalYear = Number(dto.financialYear) || currentFiscalYear;
-    const targetMonth = dto.month ? Number(dto.month) : currentMonth;
-
-    const startYear = fiscalYear - 1;
-    const isInFiscalYear = (rowYear: number, rowMonth: number): boolean => {
-      if (rowYear === startYear && rowMonth >= 10) return true;
-      if (rowYear === fiscalYear && rowMonth <= 9) return true;
-      return false;
-    };
-
-    const aggregate = (rows: any[][]): Map<string, number> => {
-      const map = new Map<string, number>();
-      if (rows.length <= 1) return map;
-
-      const headers = rows[0];
-      const nameColIndex = headers.findIndex((h: string) =>
-        h.includes('ชื่อสินค้า'),
-      );
-      const valueColIndex = headers.findIndex((h: string) =>
-        h.includes('มูลค่ารวม'),
-      );
-      const ymColIndex = headers.findIndex((h: string) =>
-        h.includes('ปีเดือน'),
-      );
-
-      if (nameColIndex === -1 || valueColIndex === -1 || ymColIndex === -1)
-        return map;
-
-      for (const row of rows.slice(1)) {
-        const ymStr = String(row[ymColIndex] || '').trim();
-        if (!ymStr) continue;
-
-        const [yearStr, monthStr] = ymStr.split('-');
-        const rowYear = parseInt(yearStr, 10);
-        const rowMonth = parseInt(monthStr, 10);
-
-        if (!isInFiscalYear(rowYear, rowMonth)) continue;
-        if (rowMonth !== targetMonth) continue;
-
-        const name = String(row[nameColIndex] || '').trim();
-        if (!name) continue;
-
-        const val = parseFloat(
-          String(row[valueColIndex] || '0').replace(/,/g, ''),
-        );
-        if (isNaN(val)) continue;
-
-        map.set(name, (map.get(name) || 0) + val);
-      }
-
-      return map;
-    };
-
-    const stockIn = aggregate(rowsIn);
-    const stockOut = aggregate(rowsOut);
+    const ctx = this.buildFiscalContext(dto);
+    const stockIn = this.aggregateByName(rowsIn, ctx);
+    const stockOut = this.aggregateByName(rowsOut, ctx);
 
     const allNames = new Set([...stockIn.keys(), ...stockOut.keys()]);
-
-    const result: { name: string; total: number }[] = [];
+    const result: NamedTotal[] = [];
 
     for (const name of allNames) {
-      const inVal = stockIn.get(name) || 0;
-      const outVal = stockOut.get(name) || 0;
-      const total = inVal - outVal;
+      const total = (stockIn.get(name) ?? 0) - (stockOut.get(name) ?? 0);
       if (total > 0) result.push({ name, total });
     }
 
-    return result.sort((a, b) => b.total - a.total).slice(0, 10);
+    return this.topN(result);
   }
 
-  async findTopTenTransOut(
-    dto: SearchDto,
-  ): Promise<{ name: string; total: number }[]> {
+  async findTopTenTransOut(dto: SearchDto): Promise<NamedTotal[]> {
     const rows = await this.getSheetData(this.sheetName2);
-    if (rows.length <= 1) return [];
 
-    const headers = rows[0];
-    const nameColIndex = headers.findIndex((h: string) =>
-      h.includes('ชื่อสินค้า'),
+    const ctx = this.buildFiscalContext(dto);
+    const aggregated = this.aggregateByName(rows, ctx);
+
+    const result: NamedTotal[] = [...aggregated.entries()].map(
+      ([name, total]) => ({ name, total }),
     );
-    const valueColIndex = headers.findIndex((h: string) =>
-      h.includes('มูลค่ารวม'),
-    );
-    const ymColIndex = headers.findIndex((h: string) => h.includes('ปีเดือน'));
 
-    if (nameColIndex === -1 || valueColIndex === -1 || ymColIndex === -1)
-      return [];
-
-    const now = new Date();
-    const currentMonth = now.getMonth() + 1;
-    const currentFiscalYear =
-      currentMonth >= 10 ? now.getFullYear() + 1 : now.getFullYear();
-
-    const fiscalYear = Number(dto.financialYear) || currentFiscalYear;
-    const targetMonth = dto.month ? Number(dto.month) : undefined;
-
-    const startYear = fiscalYear - 1;
-    const isInFiscalYear = (rowYear: number, rowMonth: number): boolean => {
-      if (rowYear === startYear && rowMonth >= 10) return true;
-      if (rowYear === fiscalYear && rowMonth <= 9) return true;
-      return false;
-    };
-
-    const aggregated = new Map<string, number>();
-
-    for (const row of rows.slice(1)) {
-      const ymStr = String(row[ymColIndex] || '').trim();
-      if (!ymStr) continue;
-
-      const [yearStr, monthStr] = ymStr.split('-');
-      const rowYear = parseInt(yearStr, 10);
-      const rowMonth = parseInt(monthStr, 10);
-
-      if (!isInFiscalYear(rowYear, rowMonth)) continue;
-      if (targetMonth && rowMonth !== targetMonth) continue;
-
-      const name = String(row[nameColIndex] || '').trim();
-      if (!name) continue;
-
-      const val = parseFloat(
-        String(row[valueColIndex] || '0').replace(/,/g, ''),
-      );
-      if (isNaN(val)) continue;
-
-      aggregated.set(name, (aggregated.get(name) || 0) + val);
-    }
-
-    return [...aggregated.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([name, total]) => ({ name, total }));
+    return this.topN(result);
   }
 }
